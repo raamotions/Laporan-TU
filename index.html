@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reren Recon – Rekening Koran & Top Up</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- ============ PANEL KIRI: UPLOAD ============ -->
+    <aside class="rail">
+      <header class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <h1>Reren Recon</h1>
+          <p>Gabungkan rekening koran dengan laporan top up</p>
+        </div>
+      </header>
+
+      <div class="drops">
+        <label class="drop" id="drop-rekening" data-slot="rekening">
+          <input type="file" accept=".xls,.xlsx,.csv,.txt" multiple>
+          <span class="drop-title">Rekening koran</span>
+          <span class="drop-hint">File CSV dari bank (.xls atau .csv)</span>
+          <span class="drop-state" aria-live="polite"></span>
+          <button type="button" class="drop-clear" hidden aria-label="Hapus file rekening koran">Hapus</button>
+        </label>
+
+        <label class="drop" id="drop-topup" data-slot="topup">
+          <input type="file" accept=".xls,.xlsx,.csv" multiple>
+          <span class="drop-title">Laporan top up</span>
+          <span class="drop-hint">File agency_to_user_table (.xlsx)</span>
+          <span class="drop-state" aria-live="polite"></span>
+          <button type="button" class="drop-clear" hidden aria-label="Hapus file laporan top up">Hapus</button>
+        </label>
+      </div>
+
+      <p class="rail-note">Tarik file ke kotak di atas atau klik untuk memilih. Urutan upload bebas, jenis file dikenali otomatis. Hasil muncul begitu kedua file masuk.</p>
+
+      <div class="field">
+        <label for="adminName">Nama admin</label>
+        <input id="adminName" type="text" value="REREN" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="actions">
+        <button type="button" id="btnReset" class="btn ghost">Hapus semua</button>
+      </div>
+
+      <footer class="rail-foot">
+        Pencocokan: nominal rekening koran antara coin×100 dan coin×100+999, lalu nama pengirim di kolom Note3. Kolom Note3 dan Notes di tabel bisa diedit langsung.
+      </footer>
+    </aside>
+
+    <!-- ============ PANEL KANAN: HASIL ============ -->
+    <main class="stage">
+      <section class="readout" id="readout" aria-label="Ringkasan hasil">
+        <div class="metric">
+          <span class="m-val" id="m-total">0</span>
+          <span class="m-lab">Transaksi top up</span>
+        </div>
+        <div class="metric ok">
+          <span class="m-val" id="m-match">0</span>
+          <span class="m-lab">Cocok dengan rekening</span>
+        </div>
+        <div class="metric warn">
+          <span class="m-val" id="m-special">0</span>
+          <span class="m-lab">Komisi / RO reseller</span>
+        </div>
+        <div class="metric bad">
+          <span class="m-val" id="m-miss">0</span>
+          <span class="m-lab">Perlu dicek</span>
+        </div>
+        <div class="metric key">
+          <span class="m-val" id="m-diff">0</span>
+          <span class="m-lab">Total selisih coin</span>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <div class="tabs" id="tabs" role="group" aria-label="Filter hasil">
+          <button type="button" class="tab on" data-f="all" aria-pressed="true">Semua</button>
+          <button type="button" class="tab" data-f="match" aria-pressed="false">Cocok</button>
+          <button type="button" class="tab" data-f="special" aria-pressed="false">Komisi / RO</button>
+          <button type="button" class="tab" data-f="check" aria-pressed="false">Perlu dicek</button>
+          <button type="button" class="tab" data-f="diff" aria-pressed="false">Ada selisih</button>
+        </div>
+        <button type="button" id="btnCompact" class="btn ghost" aria-pressed="true" title="Sembunyikan kolom top up yang jarang dipakai (file Excel tetap lengkap)">Kolom ringkas</button>
+        <input id="search" class="search" type="search" placeholder="Cari nama, ID, atau keterangan" autocomplete="off">
+        <button type="button" id="btnDownload" class="btn primary" disabled>Unduh Excel</button>
+      </section>
+
+      <section class="table-wrap" id="tableWrap">
+        <table class="grid compact" id="grid">
+          <thead>
+            <tr class="grp">
+              <th colspan="16" class="g-top" id="gTop">Dashboard Mico</th>
+              <th class="gap"></th>
+              <th colspan="3" class="g-rk">Rekening koran</th>
+              <th class="gap"></th>
+              <th colspan="2" class="g-chk">Check selisih</th>
+              <th colspan="2" class="g-pic">PIC (Personal In Charge)</th>
+            </tr>
+            <tr class="cols">
+              <th class="x">Agency Mico ID</th>
+              <th class="x">Agency name</th>
+              <th>Target Mico ID</th>
+              <th>Target name</th>
+              <th>Coins</th>
+              <th class="x">Currency</th>
+              <th>Currency amount</th>
+              <th class="x">Value to USD</th>
+              <th class="x">Value (1USD)</th>
+              <th class="x">Target is agent</th>
+              <th class="x">Note1</th>
+              <th class="x">Note2</th>
+              <th>Note3</th>
+              <th class="x">Country</th>
+              <th>Recharge time(GMT+7)</th>
+              <th class="x">Transaction Status</th>
+              <th class="gap"></th>
+              <th>Tanggal Rekening Koran</th>
+              <th>Keterangan</th>
+              <th>Nominal</th>
+              <th class="gap"></th>
+              <th>Coin</th>
+              <th>Selisih</th>
+              <th>Nama Admin</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="empty">
+          <p class="empty-title">Belum ada hasil</p>
+          <p class="empty-text">Unggah rekening koran dan laporan top up di panel kiri. Tabel gabungan akan tampil di sini.</p>
+        </div>
+      </section>
+
+      <footer class="pager" id="pager" hidden>
+        <span id="pageInfo"></span>
+        <div class="pager-btns">
+          <button type="button" class="btn ghost sm" id="prev">Sebelumnya</button>
+          <span id="pageNum"></span>
+          <button type="button" class="btn ghost sm" id="next">Berikutnya</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
