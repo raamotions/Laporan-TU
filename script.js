@@ -158,20 +158,23 @@ const Core = (() => {
     const key = note3.trim().toLowerCase();
     const notes = String(row.notes == null ? '' : row.notes).trim();
 
+    // Tanggal Rekening Koran selalu = tanggal Recharge time (kolom O), format DD/MM/YYYY
+    const R = row.t ? mk(row.t.y, row.t.mo, row.t.d) : null;
+
     if (!key) return { status: 'empty', R: null, S: '', T: '', V: '', W: '' };
     if (key === 'komisi' || key === 'ro reseller') {
-      return { status: 'special', R: row.t, Rfull: true, S: note3, T: 0, V: 0, W: E };
+      return { status: 'special', R, Rfull: false, S: note3, T: 0, V: 0, W: E };
     }
     const hit = findMatch(index, note3, notes, E);
     if (!hit) {
-      return { status: 'miss', R: row.t, Rfull: true, S: note3, T: 0, V: 0, W: E };
+      return { status: 'miss', R, Rfull: false, S: note3, T: 0, V: 0, W: E };
     }
     let T = E * 100;
     if (notes) {
       const q = notes.match(/\(([\d.]+)\)/);
       if (q) { const n = parseFloat(q[1].replace(/\./g, '')); if (!isNaN(n)) T = n; }
     }
-    return { status: 'match', R: hit.date, Rfull: false, S: hit.ket, T, V: T / 100, W: E - T / 100 };
+    return { status: 'match', R, Rfull: false, S: hit.ket, T, V: T / 100, W: E - T / 100 };
   }
 
   const api = {
@@ -613,14 +616,17 @@ if (typeof document !== 'undefined') {
 
       ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: state.rows.length + 2, column: 25 } };
 
+      // O3 = Recharge time baris pertama -> "30 Oktober 2026"
+      // (tanda "/" tidak boleh dipakai di nama file, jadi dipisah spasi)
+      const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
       const first = state.rows[0] && state.rows[0].t;
-      const stamp = first ? `${first.y}-${Core.pad(first.mo)}-${Core.pad(first.d)}` : 'hasil';
+      const stamp = first ? `${Core.pad(first.d)} ${BULAN[first.mo - 1]} ${first.y}` : 'hasil';
       const buf = await wb.xlsx.writeBuffer();
       const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Hasil_Reren_${stamp}.xlsx`;
+      a.download = `Lembar Kerja Reren - ${stamp}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
