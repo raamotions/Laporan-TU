@@ -89,6 +89,7 @@
           <button type="button" class="tab" data-f="check" aria-pressed="false">Perlu dicek</button>
           <button type="button" class="tab" data-f="diff" aria-pressed="false">Ada selisih</button>
         </div>
+        <button type="button" id="btnFill" class="btn warn-btn" hidden>Isi Note3 kosong</button>
         <button type="button" id="btnCompact" class="btn ghost" aria-pressed="true" title="Sembunyikan kolom top up yang jarang dipakai (file Excel tetap lengkap)">Kolom ringkas</button>
         <input id="search" class="search" type="search" placeholder="Cari nama, ID, atau keterangan" autocomplete="off">
         <button type="button" id="btnDownload" class="btn primary" disabled>Unduh Excel</button>
@@ -150,6 +151,31 @@
         </div>
       </footer>
     </main>
+  </div>
+
+
+  <div class="modal" id="fillModal" hidden role="dialog" aria-modal="true" aria-labelledby="fillTitle">
+    <div class="modal-box">
+      <header class="modal-head">
+        <h2 id="fillTitle">Note3 masih kosong</h2>
+        <p id="fillSub">Isi nama pengirim untuk baris berikut. Setelah submit, data dicocokkan ulang dengan rekening koran.</p>
+      </header>
+      <div class="modal-body">
+        <table class="fill-grid">
+          <thead>
+            <tr><th>Target Mico ID</th><th>Target name</th><th>Note3 (isi di sini)</th><th>Recharge time</th></tr>
+          </thead>
+          <tbody id="fillBody"></tbody>
+        </table>
+      </div>
+      <footer class="modal-foot">
+        <span id="fillCount"></span>
+        <div>
+          <button type="button" class="btn ghost" id="fillCancel">Nanti saja</button>
+          <button type="button" class="btn primary" id="fillSubmit">Submit</button>
+        </div>
+      </footer>
+    </div>
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

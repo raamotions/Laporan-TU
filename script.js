@@ -355,6 +355,54 @@ if (typeof document !== 'undefined') {
       render(true);
       const s = summary();
       toast(`${s.total} baris diproses: ${s.match} cocok, ${s.special} komisi/RO, ${s.check} perlu dicek.`, 'ok');
+      if (s.empty > 0) openFill();
+    }
+
+    /* ---------- pop up: isi Note3 yang kosong ---------- */
+    const emptyIdx = () => state.rows.map((r, i) => (r.res.status === 'empty' ? i : -1)).filter(i => i >= 0);
+
+    function updateFillBtn() {
+      const n = emptyIdx().length;
+      const b = $('#btnFill');
+      b.hidden = n === 0;
+      b.textContent = `Isi Note3 kosong (${n})`;
+    }
+
+    function openFill() {
+      const list = emptyIdx();
+      if (!list.length) return;
+      $('#fillBody').innerHTML = list.map(i => {
+        const r = state.rows[i];
+        return `<tr data-i="${i}">` +
+          `<td class="ro">${esc(r.src['Target Mico ID'])}</td>` +
+          `<td class="ro">${esc(r.src['Target name'])}</td>` +
+          `<td><input class="fill-in" type="text" autocomplete="off" spellcheck="false" placeholder="nama pengirim" aria-label="Note3 untuk ${esc(r.src['Target name'])}"></td>` +
+          `<td class="ro">${esc(fmtDateTime(r.t))}</td></tr>`;
+      }).join('');
+      $('#fillCount').textContent = `${list.length} baris perlu diisi`;
+      $('#fillModal').hidden = false;
+      const first = $('#fillBody input');
+      if (first) first.focus();
+    }
+
+    function closeFill() { $('#fillModal').hidden = true; }
+
+    function submitFill() {
+      let filled = 0, matched = 0, notFound = 0;
+      document.querySelectorAll('#fillBody tr').forEach(tr => {
+        const v = tr.querySelector('input').value.trim();
+        if (!v) return;
+        const r = state.rows[Number(tr.dataset.i)];
+        r.note3 = v;                                  // masuk ke kolom Note3 (M)
+        r.res = Core.computeRow(r, state.index);      // cari lagi di rekening koran
+        filled++;
+        if (r.res.status === 'match' || r.res.status === 'special') matched++; else notFound++;
+      });
+      closeFill();
+      if (!filled) { toast('Belum ada Note3 yang diisi.', 'err'); return; }
+      render(true);
+      const left = emptyIdx().length;
+      toast(`${filled} Note3 diisi: ${matched} ketemu di rekening koran, ${notFound} belum ketemu.` + (left ? ` Masih ada ${left} kosong.` : ''), 'ok');
     }
 
     function summary() {
@@ -450,6 +498,7 @@ if (typeof document !== 'undefined') {
       wrap.classList.toggle('filled', hasRows);
       $('#btnDownload').disabled = !hasRows;
       updateReadout();
+      updateFillBtn();
 
       const list = [];
       state.rows.forEach((r, i) => { if (passes(r)) list.push(i); });
@@ -626,6 +675,18 @@ if (typeof document !== 'undefined') {
     $('#prev').addEventListener('click', () => { state.page--; render(false); $('#tableWrap').scrollTop = 0; });
     $('#next').addEventListener('click', () => { state.page++; render(false); $('#tableWrap').scrollTop = 0; });
     $('#btnDownload').addEventListener('click', downloadXlsx);
+    $('#btnFill').addEventListener('click', openFill);
+    $('#fillCancel').addEventListener('click', closeFill);
+    $('#fillSubmit').addEventListener('click', submitFill);
+    $('#fillModal').addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeFill();
+      if (e.key === 'Enter' && e.target.matches('.fill-in')) {
+        e.preventDefault();
+        const ins = Array.from(document.querySelectorAll('#fillBody .fill-in'));
+        const next = ins[ins.indexOf(e.target) + 1];
+        if (next) next.focus(); else $('#fillSubmit').focus();
+      }
+    });
 
     // kolom ringkas: sembunyikan kolom top up yang jarang dipakai (hanya tampilan, ekspor tetap lengkap)
     function applyCompact(on) {
@@ -648,6 +709,7 @@ if (typeof document !== 'undefined') {
       r.res = Core.computeRow(r, state.index);
       paintRow(tr, r);
       updateReadout();
+      updateFillBtn();
     });
     tbody.addEventListener('keydown', e => {
       if (e.key === 'Enter' && e.target.matches('input[data-f]')) e.target.blur();

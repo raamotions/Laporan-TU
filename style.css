@@ -467,3 +467,70 @@ button, input { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- pop up isi Note3 ---------- */
+.btn.warn-btn { border-color: var(--amber); color: var(--amber); }
+.btn.warn-btn:hover:not(:disabled) { background: rgba(255, 181, 74, .1); border-color: var(--amber); color: var(--amber); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 4, 7, .78);
+  backdrop-filter: blur(3px);
+}
+.modal-box {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: calc(100vh - 48px);
+  background: var(--deck);
+  border: 1px solid var(--line-2);
+  border-top: 2px solid var(--amber);
+  border-radius: 4px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .7), 0 0 40px rgba(255, 181, 74, .08);
+}
+.modal-head { padding: 20px 24px 14px; border-bottom: 1px solid var(--line); }
+.modal-head h2 { margin: 0; font-size: 19px; font-weight: 600; }
+.modal-head p { margin: 4px 0 0; color: var(--dim); font-size: 13px; }
+.modal-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 24px; }
+.fill-grid { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 12.5px; }
+.fill-grid th {
+  position: sticky; top: 0; z-index: 1;
+  padding: 10px 10px 8px;
+  background: var(--deck);
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+.fill-grid td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.fill-grid td.ro { color: var(--dim); }
+.fill-in {
+  width: 100%;
+  min-width: 240px;
+  padding: 7px 10px;
+  background: var(--void);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font-family: var(--font-data);
+  font-size: 12.5px;
+}
+.fill-in:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px rgba(255, 181, 74, .15); }
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 13px;
+}
+.modal-foot > div { display: flex; gap: 10px; }
