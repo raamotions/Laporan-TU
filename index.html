@@ -40,7 +40,7 @@
         </label>
       </div>
 
-      <p class="rail-note">Tarik file ke kotak di atas atau klik untuk memilih. Urutan upload bebas, jenis file dikenali otomatis. Hasil muncul begitu kedua file masuk.</p>
+      <p class="rail-note">Tarik file ke kotak di atas atau klik untuk memilih. Urutan upload bebas, jenis file dikenali otomatis. Boleh unggah beberapa rekening koran sekaligus (periode berbeda), semuanya digabung. Klik Hapus bila ingin mengganti.</p>
 
       <div class="field">
         <label for="adminName">Nama admin</label>
@@ -52,7 +52,7 @@
       </div>
 
       <footer class="rail-foot">
-        Pencocokan: nominal rekening koran antara coin×100 dan coin×100+999, lalu nama pengirim di kolom Note3. Kolom Note3 dan Notes di tabel bisa diedit langsung.
+        Pencocokan: nominal rekening koran antara coin×100 dan coin×100+999, lalu nama pengirim di kolom Note3. Bila tidak ketemu, dicari lanjut (nama mirip/typo, nominal ±10%, gabungan transfer, nama + tanggal). Hasil lanjutan ditandai ungu, arahkan kursor ke kolom Keterangan untuk detailnya. Kolom Note3 dan Notes di tabel bisa diedit langsung.
       </footer>
     </aside>
 
@@ -86,6 +86,7 @@
           <button type="button" class="tab on" data-f="all" aria-pressed="true">Semua</button>
           <button type="button" class="tab" data-f="match" aria-pressed="false">Cocok</button>
           <button type="button" class="tab" data-f="special" aria-pressed="false">Komisi / RO</button>
+          <button type="button" class="tab" data-f="approx" aria-pressed="false" title="Cocok lewat pencarian lanjutan (nama mirip, nominal berbeda, atau gabungan transfer)">Perlu verifikasi</button>
           <button type="button" class="tab" data-f="check" aria-pressed="false">Perlu dicek</button>
           <button type="button" class="tab" data-f="diff" aria-pressed="false">Ada selisih</button>
         </div>

@@ -47,27 +47,78 @@ const Core = (() => {
   const fmtDateFull = t => t ? `${fmtDate(t)} ${pad(t.h)}:${pad(t.mi)}:${pad(t.s)}` : '';
 
   /* ---- rekening koran (CSV bank) ---- */
-  const LINE_RE = /^'?(\d{2})\/(\d{2})\/(\d{4}),(.*),'?\d*,([\d.]+),(CR|DB),([\d.]+)\s*$/;
+  // Satu transaksi bisa terpecah ke beberapa baris fisik (Keterangan memuat enter),
+  // jadi baris yang tidak diawali tanggal disambung ke transaksi sebelumnya sampai polanya lengkap.
+  const DATE_START = /^\s*'?\d{2}\/\d{2}\/\d{4}\s*,/;
+  const LINE_RE = /^\s*'?(\d{2})\/(\d{2})\/(\d{4})\s*,(.*?),\s*["']?\d*["']?\s*,\s*"?([\d.,]+)"?\s*,\s*(CR|DB)\s*(?:,\s*"?([\d.,]+)"?)?\s*$/i;
+
+  // "1,000,000.00" / "1.000.000,00" / "1000000.00" -> number
+  function parseAmt(raw) {
+    let s = String(raw).trim();
+    const hasC = s.includes(','), hasD = s.includes('.');
+    if (hasC && hasD) {
+      s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+    } else if (hasC) {
+      s = ((s.match(/,/g) || []).length === 1 && /,\d{1,2}$/.test(s)) ? s.replace(',', '.') : s.replace(/,/g, '');
+    } else if (hasD && (s.match(/\./g) || []).length > 1) {
+      s = s.replace(/\./g, '');
+    }
+    return parseFloat(s);
+  }
 
   function parseRekening(text) {
-    const lines = String(text).split(/\r?\n/);
+    text = String(text).replace(/^\uFEFF/, '');
+    const lines = text.split(/\r?\n/);
     const credits = [];
-    let debit = 0, skipped = 0;
+    const skippedLines = [];
+    let debit = 0, skipped = 0, buf = null;
+
+    const tryCommit = () => {
+      const m = buf.match(LINE_RE);
+      if (!m) return false;
+      const amt = parseAmt(m[5]);
+      if (isNaN(amt)) return false;
+      if (m[6].toUpperCase() === 'DB') debit++;
+      else credits.push({ idx: credits.length, date: mk(+m[3], +m[2], +m[1]), ket: m[4].trim(), amt });
+      buf = null;
+      return true;
+    };
+    const drop = () => { skipped++; if (skippedLines.length < 5) skippedLines.push(buf.slice(0, 160)); buf = null; };
+
     for (const line of lines) {
-      if (!/^'?\d{2}\/\d{2}\/\d{4},/.test(line)) continue;
-      const m = line.match(LINE_RE);
-      if (!m) { skipped++; continue; }
-      if (m[6] === 'DB') { debit++; continue; }
-      credits.push({
-        idx: credits.length,
-        date: mk(+m[3], +m[2], +m[1]),
-        ket: m[4].trim(),
-        amt: parseFloat(m[5])
-      });
+      if (DATE_START.test(line)) {
+        if (buf !== null) drop();
+        buf = line;
+        tryCommit();
+      } else if (buf !== null && line.trim()) {
+        buf += ' ' + line.trim();
+        tryCommit();
+      }
     }
-    const nama = (String(text).match(/^Nama,=,(.*)$/m) || [])[1] || '';
-    const rek = (String(text).match(/^No\. Rekening,=,'?(.*)$/m) || [])[1] || '';
-    return { credits, debit, skipped, nama: nama.trim(), rek: rek.trim() };
+    if (buf !== null) drop();
+
+    const nama = (text.match(/^Nama,=,(.*)$/m) || [])[1] || '';
+    const rek = (text.match(/^No\. Rekening,=,'?(.*)$/m) || [])[1] || '';
+    return { credits, debit, skipped, skippedLines, nama: nama.trim(), rek: rek.trim() };
+  }
+
+  // Gabungkan beberapa file rekening koran. Transaksi identik yang muncul di dua file
+  // (periode tumpang tindih) hanya dihitung sekali.
+  function mergeCredits(list) {
+    const seen = new Map();
+    const out = [];
+    list.forEach(p => {
+      const local = new Map();
+      p.credits.forEach(c => {
+        const k = `${c.date.ts}|${c.amt}|${c.ket}`;
+        const n = (local.get(k) || 0) + 1;
+        local.set(k, n);
+        if (n <= (seen.get(k) || 0)) return;
+        out.push({ idx: out.length, date: c.date, ket: c.ket, amt: c.amt });
+      });
+      local.forEach((n, k) => seen.set(k, Math.max(seen.get(k) || 0, n)));
+    });
+    return out;
   }
 
   /* ---- laporan top up ---- */
@@ -99,15 +150,55 @@ const Core = (() => {
     return rows;
   }
 
+  function mergeTopups(list) {
+    const seen = new Map();
+    const out = [];
+    list.forEach(rows => {
+      const local = new Map();
+      rows.forEach(r => {
+        const k = JSON.stringify(HEADERS.map(h => r.src[h]));
+        const n = (local.get(k) || 0) + 1;
+        local.set(k, n);
+        if (n <= (seen.get(k) || 0)) return;
+        out.push(r);
+      });
+      local.forEach((n, k) => seen.set(k, Math.max(seen.get(k) || 0, n)));
+    });
+    out.sort((a, b) => (a.t ? a.t.ts : 0) - (b.t ? b.t.ts : 0));
+    return out;
+  }
+
   /* ---- pencocokan ---- */
   const squash = s => String(s).replace(/\s+/g, '').toLowerCase();
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const round2 = n => Math.round(n * 100) / 100;
+  const nfRp = n => Number(n).toLocaleString('id-ID');
+  const dayNum = t => Date.UTC(t.y, t.mo - 1, t.d) / 86400000;
+
+  // kata-kata standar bank / gelar yang tidak membantu mengenali pengirim
+  const BANKSTOP = new Set(['trsf', 'trf', 'transfer', 'tr', 'e', 'banking', 'ebanking', 'cr', 'db', 'ftscy', 'ke', 'dari',
+    'bifast', 'bi', 'fast', 'qris', 'kliring', 'sknbi', 'rtgs', 'switching', 'setor', 'tunai', 'tarikan', 'mutasi',
+    'pembayaran', 'bayar', 'pemindahbukuan', 'pbk', 'mbanking', 'myb', 'internet', 'atm']);
+  const TITLES = new Set(['pt', 'cv', 'ud', 'bpk', 'bapak', 'ibu', 'ibuk', 'tn', 'tuan', 'ny', 'nyonya', 'sdr', 'sdri',
+    'mr', 'mrs', 'ms', 'dr', 'drs', 'ir', 'hj', 'haji', 'toko', 'kios', 'konter', 'agen', 'agent', 'reseller', 'an']);
 
   function buildIndex(credits) {
-    const sorted = credits.map(c => ({
-      idx: c.idx, amt: c.amt, date: c.date, ket: c.ket,
-      low: c.ket.toLowerCase(), sq: squash(c.ket)
-    })).sort((a, b) => a.amt - b.amt || a.idx - b.idx);
-    return { sorted };
+    const all = credits.map(c => {
+      const low = c.ket.toLowerCase();
+      const n = norm(c.ket);
+      const tok = n.split(' ').filter(t => /^[a-z]{2,}$/.test(t) && !BANKSTOP.has(t));
+      return {
+        idx: c.idx, amt: c.amt, date: c.date, ket: c.ket,
+        low, sq: squash(c.ket),
+        words: new Set(low.split(/[^a-z0-9]+/).filter(Boolean)),
+        nsq: n.replace(/ /g, ''), tok, tokSet: new Set(tok)
+      };
+    });
+    const sorted = all.slice().sort((a, b) => a.amt - b.amt || a.idx - b.idx);
+    let minDay = Infinity, maxDay = -Infinity;
+    all.forEach(c => { const d = dayNum(c.date); if (d < minDay) minDay = d; if (d > maxDay) maxDay = d; });
+    return { sorted, all, minDay, maxDay };
   }
 
   function lowerBound(arr, v) {
@@ -119,23 +210,70 @@ const Core = (() => {
     return lo;
   }
 
-  // Cari baris rekening koran: nominal dalam [target, target+999],
-  // lalu nama = Note3 utuh, kalau gagal kata pertama, kalau gagal kata terakhir.
-  function findMatch(index, note3, notes, coins) {
-    let target;
+  // Levenshtein dengan batas; > max berarti "terlalu jauh"
+  function lev(a, b, max) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      let rowMin = i;
+      for (let j = 1; j <= b.length; j++) {
+        const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        cur[j] = v;
+        if (v < rowMin) rowMin = v;
+      }
+      if (rowMin > max) return max + 1;
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+
+  function nameProfile(note3) {
+    const raw = norm(String(note3).replace(/\n/g, ' '));
+    const all = raw.split(' ').filter(Boolean);
+    let sig = all.filter(t => t.length >= 2 && !TITLES.has(t));
+    if (!sig.length) sig = all.filter(t => t.length >= 2);
+    return { compact: raw.replace(/ /g, ''), sig };
+  }
+
+  // seberapa mirip satu kata nama dengan keterangan rekening (0..1)
+  function tokStrength(t, c) {
+    if (c.tokSet.has(t)) return 1;
+    if (t.length >= 4 && c.nsq.includes(t)) return 0.9;     // "BUDISANTOSO"
+    let best = 0;
+    for (const k of c.tok) {
+      if (k.length >= 3 && t.length >= 3 && (k.startsWith(t) || t.startsWith(k))) best = Math.max(best, 0.8); // MUH ~ MUHAMMAD
+      else if (t.length >= 4 && k.length >= 4) {
+        const lim = t.length >= 7 ? 2 : 1;                   // MOHAMMAD ~ MUHAMMAD
+        if (lev(t, k, lim) <= lim) best = Math.max(best, 0.7);
+      }
+    }
+    return best;
+  }
+
+  function nameScore(nm, c) {
+    if (!nm.sig.length) return { score: 0, anchor: false };
+    if (nm.compact.length >= 4 && c.nsq.includes(nm.compact)) return { score: 1, anchor: true };
+    let sum = 0, anchor = false;
+    for (const t of nm.sig) {
+      const s = tokStrength(t, c);
+      sum += s;
+      if (s >= 0.7 && t.length >= 3) anchor = true;
+    }
+    return { score: sum / nm.sig.length, anchor };
+  }
+
+  function targetOf(notes, coins) {
     if (notes) {
       const m = String(notes).match(/[\d.]+/);
       const digits = m ? m[0].replace(/\./g, '') : '';
-      target = digits ? parseFloat(digits) : 0;
-    } else {
-      target = coins * 100;
+      return digits ? parseFloat(digits) : 0;
     }
-    const arr = index.sorted;
-    const cands = [];
-    for (let i = lowerBound(arr, target); i < arr.length && arr[i].amt <= target + 999; i++) cands.push(arr[i]);
-    if (!cands.length) return null;
-    cands.sort((a, b) => a.idx - b.idx); // urutan asli rekening koran
+    return coins * 100;
+  }
 
+  // Aturan awal (ketat): nama utuh, kata pertama, kata terakhir
+  function strictName(cands, note3) {
     const full = squash(note3);
     if (full) {
       const hit = cands.find(c => c.sq.includes(full));
@@ -145,14 +283,134 @@ const Core = (() => {
     for (const w of [words[0], words[words.length - 1]]) {
       if (!w) continue;
       const lw = w.toLowerCase();
-      const hit = cands.find(c => c.low.includes(lw));
+      // kata 1-2 huruf hanya dihitung bila berdiri sendiri, supaya "A" tidak cocok ke semua baris
+      const hit = cands.find(c => lw.length < 3 ? c.words.has(lw) : c.low.includes(lw));
       if (hit) return hit;
     }
     return null;
   }
 
+  function bestByName(cands, nm, minScore, t, used) {
+    let best = null;
+    for (const c of cands) {
+      if (used && used.has(c.idx)) continue;
+      const s = nameScore(nm, c);
+      if (!s.anchor || s.score < minScore) continue;
+      const dd = t ? Math.abs(dayNum(c.date) - dayNum(t)) : 0;
+      if (!best || s.score > best.s || (s.score === best.s && (dd < best.dd || (dd === best.dd && c.idx < best.c.idx)))) {
+        best = { c, s: s.score, dd };
+      }
+    }
+    return best && best.c;
+  }
+
+  // 2 atau 3 transfer dari pengirim yang sama yang jumlahnya pas
+  function findSum(index, nm, target, used) {
+    const hi = target + 999;
+    const pool = [];
+    for (let i = 0; i < index.sorted.length && index.sorted[i].amt <= hi; i++) {
+      const c = index.sorted[i];
+      if (c.amt <= 0 || used.has(c.idx)) continue;
+      const s = nameScore(nm, c);
+      if (s.anchor && s.score >= 0.5) pool.push({ c, s: s.score });
+    }
+    pool.sort((a, b) => b.s - a.s || a.c.idx - b.c.idx);
+    pool.length = Math.min(pool.length, 40);
+    const ok = v => { v = round2(v); return v >= target && v <= hi; };
+    const make = parts => ({
+      idx: parts[0].idx, idxs: parts.map(p => p.idx), ket: parts.map(p => p.ket).join(' + '),
+      amt: round2(parts.reduce((s, p) => s + p.amt, 0)), date: parts[0].date, tier: 'sum'
+    });
+    for (let i = 0; i < pool.length; i++) {
+      for (let j = i + 1; j < pool.length; j++) {
+        if (ok(pool[i].c.amt + pool[j].c.amt)) return make([pool[i].c, pool[j].c]);
+      }
+    }
+    for (let i = 0; i < pool.length; i++) {
+      for (let j = i + 1; j < pool.length; j++) {
+        for (let k = j + 1; k < pool.length; k++) {
+          if (ok(pool[i].c.amt + pool[j].c.amt + pool[k].c.amt)) return make([pool[i].c, pool[j].c, pool[k].c]);
+        }
+      }
+    }
+    return null;
+  }
+
+  // Cari baris rekening koran. Bertingkat, dari yang paling pasti:
+  //  1 exact  : nominal [target, target+999] + nama (aturan awal)
+  //  2 name   : nominal sama + nama fleksibel (urutan/ejaan/singkatan/typo)
+  //  3 amount : nominal agak berbeda (+-10%) + nama cocok
+  //  4 sum    : beberapa transfer dari pengirim yang sama yang jumlahnya pas
+  //  5 loose  : nama sangat cocok + tanggal berdekatan, nominal bebas
+  // Tingkat 3-5 hanya dipakai bila deep = true dan tidak memakai transfer yang sudah dipakai baris lain.
+  function findMatch(index, note3, notes, coins, opts = {}) {
+    const target = targetOf(notes, coins);
+    const arr = index.sorted;
+    const win = (lo, hi) => {
+      const out = [];
+      for (let i = lowerBound(arr, lo); i < arr.length && arr[i].amt <= hi; i++) out.push(arr[i]);
+      return out.sort((a, b) => a.idx - b.idx); // urutan asli rekening koran
+    };
+    const tag = (c, tier, amtOff) => Object.assign(c, { tier, amtOff: !!amtOff });
+
+    const exact = win(target, target + 999);
+    if (exact.length) {
+      const h = strictName(exact, note3);
+      if (h) return tag(h, 'exact', false);
+    }
+    const nm = nameProfile(note3);
+    if (exact.length) {
+      const h = bestByName(exact, nm, 0.5, opts.t, null);
+      if (h) return tag(h, 'name', false);
+    }
+    if (!opts.deep || !nm.sig.length) return null;
+
+    const used = opts.used || new Set();
+    const tol = Math.max(target * 0.1, 2000);
+    const wide = win(target - tol, target + 999 + tol);
+    let h = bestByName(wide, nm, 0.6, opts.t, used);
+    if (h) return tag(h, 'amount', !(h.amt >= target && h.amt <= target + 999));
+
+    const sum = findSum(index, nm, target, used);
+    if (sum) return sum;
+
+    let best = null;
+    for (const c of index.all) {
+      if (used.has(c.idx)) continue;
+      const s = nameScore(nm, c);
+      if (!s.anchor || s.score < 0.8) continue;
+      const dd = opts.t ? Math.abs(dayNum(c.date) - dayNum(opts.t)) : 0;
+      if (opts.t && dd > 5) continue;
+      const ad = Math.abs(c.amt - target);
+      if (!best || s.score > best.s || (s.score === best.s && (dd < best.dd || (dd === best.dd && ad < best.ad)))) {
+        best = { c, s: s.score, dd, ad };
+      }
+    }
+    if (best) return tag(best.c, 'loose', true);
+    return null;
+  }
+
+  // Petunjuk untuk baris yang tetap tidak ketemu
+  function suggest(index, note3, target, t) {
+    const nm = nameProfile(note3);
+    const fmt = x => `- ${fmtDate(x.c.date)} | ${nfRp(x.c.amt)} | ${x.c.ket.slice(0, 90)}`;
+    const scored = index.all.map(c => ({ c, s: nm.sig.length ? nameScore(nm, c).score : 0, ad: Math.abs(c.amt - target) }));
+    const byName = scored.filter(x => x.s >= 0.34).sort((a, b) => b.s - a.s || a.ad - b.ad).slice(0, 3);
+    const byAmt = scored.filter(x => x.ad <= Math.max(target * 0.2, 3000)).sort((a, b) => a.ad - b.ad).slice(0, 3);
+    const out = [];
+    if (t && isFinite(index.minDay) && (dayNum(t) < index.minDay - 1 || dayNum(t) > index.maxDay + 1)) {
+      const f = d => fmtDate(fromUTCms(d * 86400000));
+      out.push(`Tanggal top up di luar periode rekening koran yang diunggah (${f(index.minDay)} sampai ${f(index.maxDay)}). Unggah rekening koran periode tersebut.`);
+    }
+    if (byName.length) out.push('Nama mirip:\n' + byName.map(fmt).join('\n'));
+    if (byAmt.length) out.push('Nominal dekat:\n' + byAmt.map(fmt).join('\n'));
+    if (!out.length) out.push('Tidak ada transfer dengan nama maupun nominal yang mirip di rekening koran.');
+    return 'Tidak ditemukan di rekening koran.\n' + out.join('\n');
+  }
+
   // Hasil satu baris: status, tanggal rekening, keterangan, nominal, coin, selisih
-  function computeRow(row, index) {
+  function computeRow(row, index, opts = {}) {
+    const deep = opts.deep !== false;
     const E = Number(row.src['Coins']) || 0;
     const note3 = String(row.note3 == null ? '' : row.note3);
     const key = note3.trim().toLowerCase();
@@ -161,25 +419,59 @@ const Core = (() => {
     // Tanggal Rekening Koran selalu = tanggal Recharge time (kolom O), format DD/MM/YYYY
     const R = row.t ? mk(row.t.y, row.t.mo, row.t.d) : null;
 
-    if (!key) return { status: 'empty', R: null, S: '', T: '', V: '', W: '' };
+    if (!key) return { status: 'empty', R: null, S: '', T: '', V: '', W: '', hits: [] };
     if (key === 'komisi' || key === 'ro reseller') {
-      return { status: 'special', R, Rfull: false, S: note3, T: 0, V: 0, W: E };
+      return { status: 'special', R, Rfull: false, S: note3, T: 0, V: 0, W: E, hits: [] };
     }
-    const hit = findMatch(index, note3, notes, E);
+    const hit = findMatch(index, note3, notes, E, { t: row.t, deep, used: opts.used });
     if (!hit) {
-      return { status: 'miss', R, Rfull: false, S: note3, T: 0, V: 0, W: E };
+      const out = { status: 'miss', R, Rfull: false, S: note3, T: 0, V: 0, W: E, hits: [] };
+      if (deep) out.hint = suggest(index, note3, targetOf(notes, E), row.t);
+      return out;
     }
     let T = E * 100;
-    if (notes) {
+    if (hit.amtOff) {
+      T = Math.round(hit.amt);   // nominal sebenarnya di rekening koran, supaya selisihnya jujur
+    } else if (notes) {
       const q = notes.match(/\(([\d.]+)\)/);
       if (q) { const n = parseFloat(q[1].replace(/\./g, '')); if (!isNaN(n)) T = n; }
     }
-    return { status: 'match', R, Rfull: false, S: hit.ket, T, V: T / 100, W: E - T / 100 };
+    const V = T / 100;
+    const how = {
+      name: 'Nama dicocokkan secara fleksibel (urutan, ejaan, atau singkatan berbeda). Mohon dicek.',
+      amount: `Nama cocok, tetapi nominal di rekening koran ${nfRp(hit.amt)} berbeda dari coin x 100. Kolom Nominal diisi nominal sebenarnya.`,
+      sum: `Gabungan ${(hit.idxs || []).length} transfer dengan total ${nfRp(hit.amt)}.`,
+      loose: `Hanya nama dan tanggal yang cocok, nominal di rekening koran ${nfRp(hit.amt)}. Mohon dicek.`
+    }[hit.tier] || '';
+    return {
+      status: 'match', R, Rfull: false, S: hit.ket, T, V, W: round2(E - V),
+      hits: hit.idxs || [hit.idx], tier: hit.tier, verify: hit.tier !== 'exact', how
+    };
+  }
+
+  // transfer rekening koran yang sudah dipakai baris lain
+  function usedBy(rows, skip) {
+    const used = new Set();
+    rows.forEach(r => { if (r !== skip && r.res && r.res.hits) r.res.hits.forEach(i => used.add(i)); });
+    return used;
+  }
+
+  // Dua putaran: putaran 1 aturan ketat untuk semua baris, putaran 2 pencarian lanjutan
+  // hanya untuk yang belum ketemu (dengan transfer yang masih bebas).
+  function computeAll(rows, index) {
+    rows.forEach(r => { r.res = computeRow(r, index, { deep: false }); });
+    const used = usedBy(rows, null);
+    rows.forEach(r => {
+      if (r.res.status !== 'miss') return;
+      r.res = computeRow(r, index, { deep: true, used });
+      r.res.hits.forEach(i => used.add(i));
+    });
   }
 
   const api = {
     HEADERS, pad, mk, parseTime, fmtDateTime, fmtDate, fmtDateFull,
-    parseRekening, parseTopupAOA, buildIndex, findMatch, computeRow
+    parseRekening, mergeCredits, parseTopupAOA, mergeTopups,
+    buildIndex, findMatch, computeRow, computeAll, usedBy
   };
   return api;
 })();
@@ -263,8 +555,8 @@ if (typeof document !== 'undefined') {
         return { kind: 'unknown' };
       }
 
-      const text = new TextDecoder('utf-8').decode(buf);
-      if (/^'?\d{2}\/\d{2}\/\d{4},/m.test(text) || /No\. Rekening/i.test(text)) {
+      const text = new TextDecoder('utf-8').decode(buf).replace(/^\uFEFF/, '');
+      if (/^\s*'?\d{2}\/\d{2}\/\d{4}\s*,/m.test(text) || /No\. Rekening/i.test(text)) {
         const parsed = Core.parseRekening(text);
         if (parsed.credits.length) return { kind: 'rekening', parsed };
       }
@@ -292,17 +584,20 @@ if (typeof document !== 'undefined') {
       }
       el.classList.add('has');
       clear.hidden = false;
+      const names = data.files.map(f => `${f.name} (${bytes(f.size)})`).join('\n');
       if (slot === 'rekening') {
-        const p = data.parsed;
-        stateEl.textContent =
-          `${data.name} (${bytes(data.size)})\n` +
-          `${p.credits.length} transaksi kredit, ${p.debit} debit diabaikan` +
-          (p.nama ? `\nRekening ${p.nama}` : '');
+        const credits = Core.mergeCredits(data.files.map(f => f.parsed));
+        const debit = data.files.reduce((n, f) => n + f.parsed.debit, 0);
+        const skipped = data.files.reduce((n, f) => n + f.parsed.skipped, 0);
+        const nama = (data.files.find(f => f.parsed.nama) || { parsed: {} }).parsed.nama;
+        stateEl.textContent = `${names}\n${credits.length} transaksi kredit, ${debit} debit diabaikan` +
+          (skipped ? `\nPERHATIAN: ${skipped} baris tidak terbaca (lihat Console)` : '') +
+          (nama ? `\nRekening ${nama}` : '');
+        data.files.forEach(f => { if (f.parsed.skipped) console.warn(`${f.name}: baris tidak terbaca`, f.parsed.skippedLines); });
       } else {
-        const first = data.rows[0] && data.rows[0].t, last = data.rows[data.rows.length - 1] && data.rows[data.rows.length - 1].t;
-        stateEl.textContent =
-          `${data.name} (${bytes(data.size)})\n` +
-          `${data.rows.length} baris top up` +
+        const rows = Core.mergeTopups(data.files.map(f => f.rows));
+        const first = rows[0] && rows[0].t, last = rows[rows.length - 1] && rows[rows.length - 1].t;
+        stateEl.textContent = `${names}\n${rows.length} baris top up` +
           (first && last ? `\n${fmtDateTime(first).slice(0, 16)} sampai ${fmtDateTime(last).slice(0, 16)}` : '');
       }
       stateEl.style.whiteSpace = 'pre-line';
@@ -324,7 +619,11 @@ if (typeof document !== 'undefined') {
           if (hintSlot && res.kind !== hintSlot) {
             toast(`${file.name} dikenali sebagai ${res.kind === 'topup' ? 'laporan top up' : 'rekening koran'}, dipindahkan ke kotak yang sesuai.`);
           }
-          state.slots[res.kind] = { name: file.name, size: file.size, ...(res.kind === 'topup' ? { rows: res.rows } : { parsed: res.parsed }) };
+          const entry = { name: file.name, size: file.size, ...(res.kind === 'topup' ? { rows: res.rows } : { parsed: res.parsed }) };
+          const cur = state.slots[res.kind] || { files: [] };
+          const k = cur.files.findIndex(f => f.name === file.name);
+          if (k >= 0) cur.files[k] = entry; else cur.files.push(entry);   // nama sama = ganti, nama beda = gabung
+          state.slots[res.kind] = cur;
           paintSlot(res.kind);
         } catch (err) {
           console.error(err);
@@ -351,13 +650,15 @@ if (typeof document !== 'undefined') {
         render(false);
         return;
       }
-      state.index = Core.buildIndex(rekening.parsed.credits);
-      state.rows = topup.rows.map(r => ({ src: r.src, t: r.t, note3: r.note3, notes: '', res: null }));
-      state.rows.forEach(r => { r.res = Core.computeRow(r, state.index); });
+      state.index = Core.buildIndex(Core.mergeCredits(rekening.files.map(f => f.parsed)));
+      state.rows = Core.mergeTopups(topup.files.map(f => f.rows))
+        .map(r => ({ src: r.src, t: r.t, note3: r.note3, notes: '', res: null }));
+      Core.computeAll(state.rows, state.index);
       state.page = 1;
       render(true);
       const s = summary();
-      toast(`${s.total} baris diproses: ${s.match} cocok, ${s.special} komisi/RO, ${s.check} perlu dicek.`, 'ok');
+      toast(`${s.total} baris diproses: ${s.match} cocok` + (s.approx ? ` (${s.approx} perlu verifikasi)` : '') +
+        `, ${s.special} komisi/RO, ${s.check} perlu dicek.`, 'ok');
       if (s.empty > 0) openFill();
     }
 
@@ -397,7 +698,7 @@ if (typeof document !== 'undefined') {
         if (!v) return;
         const r = state.rows[Number(tr.dataset.i)];
         r.note3 = v;                                  // masuk ke kolom Note3 (M)
-        r.res = Core.computeRow(r, state.index);      // cari lagi di rekening koran
+        r.res = Core.computeRow(r, state.index, { used: Core.usedBy(state.rows, r) });   // cari lagi di rekening koran
         filled++;
         if (r.res.status === 'match' || r.res.status === 'special') matched++; else notFound++;
       });
@@ -409,13 +710,15 @@ if (typeof document !== 'undefined') {
     }
 
     function summary() {
-      const s = { total: state.rows.length, match: 0, special: 0, miss: 0, empty: 0, check: 0, diff: 0 };
+      const s = { total: state.rows.length, match: 0, special: 0, miss: 0, empty: 0, check: 0, diff: 0, approx: 0 };
       for (const r of state.rows) {
         const st = r.res.status;
         s[st]++;
+        if (st === 'match' && r.res.verify) s.approx++;
         if (st !== 'empty') s.diff += Number(r.res.W) || 0;
       }
       s.check = s.miss + s.empty;
+      s.diff = Math.round(s.diff * 100) / 100;
       return s;
     }
 
@@ -433,6 +736,7 @@ if (typeof document !== 'undefined') {
       const st = r.res.status;
       if (state.filter === 'match' && st !== 'match') return false;
       if (state.filter === 'special' && st !== 'special') return false;
+      if (state.filter === 'approx' && !(st === 'match' && r.res.verify)) return false;
       if (state.filter === 'check' && st !== 'miss' && st !== 'empty') return false;
       if (state.filter === 'diff' && !(st !== 'empty' && Number(r.res.W) !== 0)) return false;
       if (state.q) {
@@ -450,11 +754,18 @@ if (typeof document !== 'undefined') {
       return { rTxt, w, wCls };
     }
 
+    function sTitle(x) {
+      if (x.status === 'miss' && x.hint) return x.hint;
+      if (x.verify && x.how) return x.S + '\n\nPERLU VERIFIKASI: ' + x.how;
+      return x.S;
+    }
+    const rowCls = x => 'is-' + x.status + (x.verify ? ' is-verify' : '');
+
     function rowHTML(r, i) {
       const s = r.src;
       const { rTxt, w, wCls } = resCells(r);
       const x = r.res;
-      return `<tr data-i="${i}" class="is-${x.status}">` +
+      return `<tr data-i="${i}" class="${rowCls(x)}">` +
         `<td class="x num dim">${esc(s['Agency Mico ID'])}</td>` +
         `<td class="x">${esc(s['Agency name'])}</td>` +
         `<td class="num dim">${esc(s['Target Mico ID'])}</td>` +
@@ -473,7 +784,7 @@ if (typeof document !== 'undefined') {
         `<td class="x">${esc(s['Transaction Status'])}</td>` +
         `<td class="gap"></td>` +
         `<td data-c="R">${esc(rTxt)}</td>` +
-        `<td data-c="S" title="${esc(x.S)}">${esc(x.S)}</td>` +
+        `<td data-c="S" title="${esc(sTitle(x))}">${esc(x.S)}</td>` +
         `<td class="num" data-c="T">${esc(nf(x.T))}</td>` +
         `<td class="gap"></td>` +
         `<td class="num" data-c="V">${esc(nf(x.V))}</td>` +
@@ -486,10 +797,10 @@ if (typeof document !== 'undefined') {
     function paintRow(tr, r) {
       const x = r.res;
       const { rTxt, w, wCls } = resCells(r);
-      tr.className = 'is-' + x.status;
+      tr.className = rowCls(x);
       const set = (c, txt) => { const td = tr.querySelector(`td[data-c="${c}"]`); if (td) { td.textContent = txt; return td; } };
       set('R', rTxt);
-      const sTd = set('S', x.S); if (sTd) sTd.title = x.S;
+      const sTd = set('S', x.S); if (sTd) sTd.title = sTitle(x);
       set('T', nf(x.T));
       set('V', nf(x.V));
       const wTd = set('W', w); if (wTd) wTd.className = 'num ' + wCls;
@@ -602,6 +913,11 @@ if (typeof document !== 'undefined') {
             row.getCell(18).numFmt = x.Rfull ? 'dd/mm/yyyy hh:mm:ss' : 'dd/mm/yyyy';
           }
           row.getCell(19).value = x.S;
+          if (x.verify) {
+            row.getCell(19).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+            if (x.how) row.getCell(19).note = x.how;
+          }
+          if (x.status === 'miss' && x.hint) row.getCell(19).note = x.hint;
           row.getCell(20).value = x.T;
           row.getCell(22).value = x.V;
           row.getCell(23).value = x.W;
@@ -712,7 +1028,7 @@ if (typeof document !== 'undefined') {
       const tr = input.closest('tr');
       const r = state.rows[Number(tr.dataset.i)];
       r[input.dataset.f] = input.value;
-      r.res = Core.computeRow(r, state.index);
+      r.res = Core.computeRow(r, state.index, { used: Core.usedBy(state.rows, r) });
       paintRow(tr, r);
       updateReadout();
       updateFillBtn();
