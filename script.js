@@ -263,7 +263,21 @@ const Core = (() => {
     return { score: sum / nm.sig.length, anchor };
   }
 
+  // Format Notes: "3.000.000 (bagi 2 akun)" -> satu transfer rekening dibagi ke beberapa akun.
+  // nominal = jumlah transfer asli di rekening koran, n = jumlah akun yang membagi transfer itu.
+  function parseSplit(notes) {
+    const m = String(notes == null ? '' : notes)
+      .match(/^\s*(?:rp\.?\s*)?(\d[\d.,]*)\s*\(\s*bagi\s*(\d+)\s*(?:akun|account|acc|rek|rekening)?\s*\)/i);
+    if (!m) return null;
+    const nominal = parseAmt(m[1].replace(/[.,]$/, ''));
+    const n = parseInt(m[2], 10);
+    if (!isFinite(nominal) || nominal <= 0 || !(n >= 1)) return null;
+    return { nominal, n };
+  }
+
   function targetOf(notes, coins) {
+    const sp = parseSplit(notes);
+    if (sp) return sp.nominal;
     if (notes) {
       const m = String(notes).match(/[\d.]+/);
       const digits = m ? m[0].replace(/\./g, '') : '';
@@ -423,14 +437,19 @@ const Core = (() => {
     if (key === 'komisi' || key === 'ro reseller') {
       return { status: 'special', R, Rfull: false, S: note3, T: 0, V: 0, W: E, hits: [] };
     }
-    const hit = findMatch(index, note3, notes, E, { t: row.t, deep, used: opts.used });
+    // Notes "nominal (bagi N akun)": transfer di rekening koran dipakai bersama beberapa akun,
+    // jadi transfer yang sudah dipakai akun lain tetap boleh dipilih lagi.
+    const split = parseSplit(notes);
+    const hit = findMatch(index, note3, notes, E, { t: row.t, deep, used: split ? new Set() : opts.used });
     if (!hit) {
       const out = { status: 'miss', R, Rfull: false, S: note3, T: 0, V: 0, W: E, hits: [] };
       if (deep) out.hint = suggest(index, note3, targetOf(notes, E), row.t);
       return out;
     }
     let T = E * 100;
-    if (hit.amtOff) {
+    if (split) {
+      T = E * 100;               // kolom Nominal selalu Coins x 100; Keterangan mengikuti nominal awal di Notes
+    } else if (hit.amtOff) {
       T = Math.round(hit.amt);   // nominal sebenarnya di rekening koran, supaya selisihnya jujur
     } else if (notes) {
       const q = notes.match(/\(([\d.]+)\)/);
@@ -443,8 +462,9 @@ const Core = (() => {
       sum: `Gabungan ${(hit.idxs || []).length} transfer dengan total ${nfRp(hit.amt)}.`,
       loose: `Hanya nama dan tanggal yang cocok, nominal di rekening koran ${nfRp(hit.amt)}. Mohon dicek.`
     }[hit.tier] || '';
+    const splitNote = split ? `Transfer ${nfRp(split.nominal)} dibagi ${split.n} akun. Kolom Nominal = Coins x 100.` : '';
     return {
-      status: 'match', R, Rfull: false, S: hit.ket, T, V, W: round2(E - V),
+      status: 'match', R, Rfull: false, S: hit.ket, T, V, W: round2(E - V), split: !!split, splitNote,
       hits: hit.idxs || [hit.idx], tier: hit.tier, verify: hit.tier !== 'exact', how
     };
   }
@@ -471,7 +491,7 @@ const Core = (() => {
   const api = {
     HEADERS, pad, mk, parseTime, fmtDateTime, fmtDate, fmtDateFull,
     parseRekening, mergeCredits, parseTopupAOA, mergeTopups,
-    buildIndex, findMatch, computeRow, computeAll, usedBy
+    buildIndex, findMatch, computeRow, computeAll, usedBy, parseSplit
   };
   return api;
 })();
@@ -756,7 +776,8 @@ if (typeof document !== 'undefined') {
 
     function sTitle(x) {
       if (x.status === 'miss' && x.hint) return x.hint;
-      if (x.verify && x.how) return x.S + '\n\nPERLU VERIFIKASI: ' + x.how;
+      if (x.verify && x.how) return x.S + (x.splitNote ? '\n\n' + x.splitNote : '') + '\n\nPERLU VERIFIKASI: ' + x.how;
+      if (x.splitNote) return x.S + '\n\n' + x.splitNote;
       return x.S;
     }
     const rowCls = x => 'is-' + x.status + (x.verify ? ' is-verify' : '');
